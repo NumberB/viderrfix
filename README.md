@@ -5,6 +5,8 @@ Sometimes recordings aren't perfect. Even if you have great reception and typica
 
 This script runs in the bash shell and is called on by tvheadend as a post-processor command. It compares the amount of data errors to a threshold you set and if met it will process the recording and then overwrite the original recording with your processed copy. This generally makes the file a little bigger (seems to be about 5-8% larger), but it does help troublesome files to play more reliably. 
 
+Presently this will only work with standard recordings, which are in mpeg2 transport stream format (mpegts). In tvheadend this is the default recording method.
+
 ## How to use
 
 ### Download the script and place it somewhere accessible to the user running the tvheadend application 
