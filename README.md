@@ -1,7 +1,7 @@
 # viderrfix
 TVHeadEnd post processing script to fix _basic_ container recording errors
 
-Sometimes recordings aren't perfect. Even if you have great reception and typically things are perfect; inevitably there will be a fart in the solar wind and you will get errors in your recording. This script is to help with those. It uses ffmpeg to create a stream copy of recording which is usually enough to fix most container errors. It isn't perfect, and is not a "video fix" end-all be-all by any means, but it is better than nothing. If your recording was too terrible then there's nothing that can be done.
+Sometimes recordings aren't perfect. Even if you have great reception and typically conditions are excellent; inevitably there will be a fart in the solar wind and you will get errors in your recording. This script is to help with those. It uses ffmpeg to create a stream copy of recording which is usually enough to fix most container errors. It isn't a "video fix" end-all be-all by any means, but it is better than nothing. If your recording was too terrible then there's nothing that can be done.
 
 This script runs in the bash shell and is called on by tvheadend as a post-processor command. It compares the amount of data errors to a threshold you set and if met it will process the recording and then overwrite the original recording with your processed copy. This generally makes the file a little bigger (seems to be about 5-8% larger), but it does help troublesome files to play more reliably. 
 
