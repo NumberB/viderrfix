@@ -60,7 +60,7 @@ function logger () {
 }
 
 function debug () {
-  if [ ${logdebug} = 1 ]; then echo $(logdate) ${mypid} "_DEBUG_ ${1}" >> ${logloc};fi
+  if [ ${logdebug} = 1 ]; then echo $(logdate) [${mypid}] "_DEBUG_ ${1}" >> ${logloc};fi
 }
 
 # Check log file
@@ -252,15 +252,15 @@ trap sig_closeup INT QUIT TERM
 
 declare -r mypid="$$" # used for logging and mostly so if there are two runs at the same time we can tell them apart
 declare -r tvhdvrlog="${tvhhome}/config/dvr/log" # need to know where to find the dvr logs
-#declare -r recdir="$(dirname "${filerecloc}")" # directory where the recording resides (alternative method)
-declare -r recdir="${filerecloc%/*}" # directory where the recording resides [BASH]
-#declare -r recfile="$(basename "${filerecloc}")" # actual filename of the recording (alternative method)
-declare -r recfile="${filerecloc##*/}" # actual filename of the recording [BASH]
-
 
 checklog # check if we can log
 logger "### Script invoked ###"
 validatevars "$@" # validate input arguments and set them for the script
+
+#declare -r recdir="$(dirname "${filerecloc}")" # directory where the recording resides (alternative method)
+declare -r recdir="${filerecloc%/*}" # directory where the recording resides [BASH]
+#declare -r recfile="$(basename "${filerecloc}")" # actual filename of the recording (alternative method)
+declare -r recfile="${filerecloc##*/}" # actual filename of the recording [BASH]
 
 # Validate necessary external applications
 command -v inotifywait >/dev/null 2>&1 || { writewait="no"; logger "This script requires the `inotifywait` program to wait to overwrite the recording with the processed video. Setting to not wait."; }
