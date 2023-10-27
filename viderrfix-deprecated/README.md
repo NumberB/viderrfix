@@ -1,3 +1,7 @@
+_NOTE:_ This is the original copy of the instructions specifically for this first version of the script
+
+
+
 # viderrfix
 TVHeadEnd post processing script to fix _basic_ container recording errors
 
@@ -6,13 +10,6 @@ Sometimes recordings aren't perfect. Even if you have great reception and typica
 This script runs in the bash shell and is called on by tvheadend as a post-processor command. It compares the amount of data errors to a threshold you set and if met it will process the recording and then overwrite the original recording with your processed copy. This generally makes the file a little bigger (seems to be about 5-8% larger), but it does help troublesome files to play more reliably. 
 
 Presently this will only work with standard recordings, which are in mpeg2 transport stream format (mpegts). In tvheadend this is the default recording method (aka pass-thru).
-
-_Update:_ This revision 2 I've had running for a few years and it changes up how the script works by placing the video recordings in a queue and then processing them on a timer. Only recently encountered a pretty big issue with it which I am currently in the process of updating, hence the first update here in years.
-
-## UPDATES (v2)
-1. added viderrfix-deprecated directory and moved old viderrfix.sh into it with the old instructions
-2. added vef.sh revision 2 (has issues and is still being updated)
-3. updated README with current VEF instructions and other minor updates
 
 ## How to use
 
@@ -26,11 +23,11 @@ You *should* have `inotifywait` installed and in the PATH of the user running th
 
 _Ubunutu / Debian_
 
-```bash
+```
 apt-get install ffmpeg inotifywait
 ```
 _RHEL / CentOS_
-```bash
+```
 yum install ffmpeg inotifywait
 ```
 
@@ -38,25 +35,29 @@ yum install ffmpeg inotifywait
 
 _I'm partial to /usr/local/bin_
 
-```bash
-cd /usr/local/bin
-wget https://raw.githubusercontent.com/NumberB/viderrfix/master/vef.sh
-chmod 755 vef.sh
 ```
-Optional: `chown tvheadend.tvheadend /usr/local/bin/vef.sh` (put in the correct ownership information for your system!)
+cd /usr/local/bin
+wget https://raw.githubusercontent.com/NumberB/viderrfix/master/viderrfix.sh
+chmod 755 viderrfix.sh
+```
+Optional: `chown tvheadend.tvheadend /usr/local/bin/viderrfix.sh` (put in the correct ownership information for your system!)
 
 ### Edit the basic settings towards the top of the script
-```bash
-nano /usr/local/bin/vef.sh
-#(or)
-vim /usr/local/bin/vef.sh
-#(or whatever editor you prefer)
+```
+nano /usr/local/bin/viderrfix.sh
+(or)
+vim /usr/local/bin/viderrfix.sh
+(or whatever editor you prefer)
 ```
 - Specify the root of the tvheadend config directory `tvhhome="/home/tvheadend"`
+
 - Specify how many data errors will trigger the script to process the video `dvrerrorthreshold=20`
+
 - If you want, change where the log file resides `logloc="${tvhhome}/viderrfix.log"`
+
 - If you want, turn on debugging in the log `logdebug=0` (1 turn's it on)
-- (Testing is currently not working) If this is your first run or you are still testing, leave `testrun="yes"` as "yes", but when you are ready to use the script remove "yes" or change it to "no" (_This is set to "yes" by default for your protection_)
+
+- If this is your first run or you are still testing, leave `testrun="yes"` as "yes", but when you are ready to use the script remove "yes" or change it to "no" (_This is set to "yes" by default for your protection_)
 
 ### When the script is setup (and tested), set it to run in tvheadend:
 
@@ -65,32 +66,20 @@ Open up the tvheadend web console, and navigate to `Configuration > Recordings >
 _If you wish, create a new profile to test the post-processing script_
 
 Select the profile you want to set this script to run under, and in the box "Post-Processor Command:" enter in:
-```bash
-/usr/local/bin/vef.sh "%f"
 ```
-With the correct path to where you placed the vef.sh script
+/usr/local/bin/viderrfix.sh "%f" "%e"
+```
+With the correct path to where you placed the viderrfix.sh script
 
 **Yes, you _MUST_ quote the "%f" argument for file paths to process correctly!**
 
 Click `Save`
 
-### Update the crontab to process the queue
-```bash
-crontab -e -u ${hts/tvheadend}  #Example: "crontab -e -u tvheadend"
-```
-That is, the user that is running tvheadend, which is typically 'hts' or 'tvheadend'.
-
-Insert these lines into the crontab of the tvheadend user and then save
-```bash
-#VEF Processing every half hour
-2,32 * * * * /usr/local/bin/vef.sh -p
-```
-Feel free to update the processing time to whatever you prefer. This is obviously going to process 2 minutes and 32 minutes after the hour every hour.
+That's it!
 
 
-## How to test -- TESTING IS BROKEN IN v2!
 
-_Testing is broken currently in v2! Skip this section for now_
+## How to test
 
 You should test this first obviously, and here's how you can do that:
 
@@ -110,7 +99,7 @@ sudo su - tvheadend
 
 4. Run the script manually:
 ```
-/usr/local/bin/vef.sh "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts" "Test"
+/usr/local/bin/viderrfix.sh "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts" "Test"
 ```
 
 5. Go look through the log and see what happened! You want to see it there are any warnings or errors or if variables aren't getting set (debug will show you this). By default the log will be in the tvheadend home directory you set.
@@ -121,9 +110,8 @@ less /home/tvheadend/viderrfix.log
 6. If you can't run step 3 as the user in the shell, that's alright, we can tell sudo to run it as that user:
     1. The "tvheadend" at the end of the command is the user to run this command as
 ```
-sudo su -s /bin/bash  -c '/usr/local/bin/vef.sh "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts" "Test"' tvheadend
+sudo su -s /bin/bash  -c '/usr/local/bin/viderrfix.sh "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts" "Test"' tvheadend
 ```
 
 7. When testing is all done change testrun  to "no" and the processed file will overwrite the original recording (and we won't have to do anything to tvheadend because it doesn't know any better in regards to the file on the system)
 
-_Testing is broken currently in v2! Skip this section for now_
