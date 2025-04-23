@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vef.sh, which is: viderrfix.sh | Revision 2
+# vef.sh, which is: viderrfix.sh | Revision 3
 #
 # Post Processing script for tvheadend on recorded .ts files (mpeg2)
 # (but could be updated to process however you want)
@@ -35,7 +35,7 @@ declare -r -i dvrerrorthreshold=20
 
 # Where would you like this script to log to?
 declare -r logloc="${tvhhome}/vef.log"
-declare -r -i logdebug=0 # 0 = no debug log, 1 = yes debug log
+declare -r -i logdebug=1 # 0 = no debug log, 1 = yes debug log
 
 # Uncomment and set this if you want to change where temporary files are set while being processed
 declare tmpdirloc="/tvhtmp"
@@ -52,6 +52,11 @@ declare -r testrun="no"
 # If "no" then the recording will be overwritten immediately after processing is finished
 declare -r writewait="yes"      #yes or no
 
+# ffmpeg log level
+declare ffmpegloglevel="error"
+if [ ${logdebug} = 1 ]; then
+  declare ffmpegloglevel="warning"
+fi
 
 
 
@@ -62,7 +67,7 @@ declare -r writewait="yes"      #yes or no
 #
 # Date
 # For the logger
-logdate () {
+function logdate () {
   date "+%Y/%m/%d  %H:%M:%S"
 }
 
@@ -84,9 +89,17 @@ function debug () {
   fi
 }
 
-clean() {
+function clean() {
+    # BASH 4+ function
     local a=${1//[^[:alnum:]]/}
     echo "${a,,}"
+}
+
+function checkifproccessing () {
+    if pidof -o %PPID -x "vef.sh">/dev/null; then
+      veflog "A vef.sh process has been found already running, exiting..."
+      exit 1
+    fi
 }
 
 # Check log file
@@ -116,23 +129,35 @@ function verifymeta () {
   fi
 }
 
-function checkplog () {
-  debug "Checking if file is in the processed log"
-  grep -q "${filepath}" ${plogloc}
+#function checkplog () {
+#  debug "Checking if file is in the processed log"
+#  grep -q "${filepath}" ${plogloc}
+#}
+
+function checkplogproc () {
+  debug "Checking the processed log for if this file has been processed"
+  grep -E -q "^Processed:.*${filepath}$" ${plogloc}
+}
+
+function checkplogqueue () {
+  debug "Checking the processed log for if this file has been queued"
+  grep -E -q "^Queued:.*${filepath}$" ${plogloc}
 }
 
 function buildqueuefile () {
   declare timestamp="$(date '+%y%m%d%H%M%S')" 
   #declare -r recfile="$(basename "${filerecloc}")" # actual filename of the recording (alternative method)
-  declare justfilename=${filepath##*/} # actual filename of the recording [BASH]
-  declare cleanedfilename=$(clean ${justfilename:0:8}) # send first 8 characters of filename to the clean function [BASH]
-  declare queuefile="${timestamp}_${cleanedfilename}"
+  declare justfilename="${filepath##*/}" # actual filename of the recording [BASH]
+  declare cleanedfilenamestart="$(clean ${justfilename:0:8})" # send first 8 characters of filename to the clean function [BASH]
+  declare cleanedfilenameend="$(clean ${justfilename:0-6})" # send last 6 characters of filename to the clean function [BASH]
+  declare queuefile="${timestamp}_${cleanedfilenamestart}_${cleanedfilenameend}"
 
   if [ -f ${queuefile} ];then
     veflog "! queuefile already exists??? __${queuefile}__ exists somehow, so we are going to exit"
     exit 2
   else
     echo "${filepath}" > ${qdir}/${queuefile}
+    echo "Queued:${timestamp},${filepath}" >> ${plogloc} # Record the the processed log that this is queued so we can avoid multiples that could break things
     veflog "Queued as __${queuefile}__"
     debug "Full path: Queued ${qdir}/${queuefile}"
   fi
@@ -144,10 +169,16 @@ function queuefile () {
   if [ -f "${filepath}" ];then
 
     # check plog for previous processing
-    checkplog
+    checkplogproc
     if [ "$?" -gt 0 ];then
-      veflog "Queue file __${filepath}__ for processing"
-      buildqueuefile
+      # check plog for previous queueing of this file (don't double queue!)
+      checkplogqueue
+      if [ "$?" -gt 0 ];then
+        veflog "Queue file __${filepath}__ for processing"
+        buildqueuefile
+      else
+        veflog "File __${filepath}__ logged as queued already, skipping"
+      fi
     else
       veflog "File __${filepath}__ logged as processed already, skipping"
     fi
@@ -155,6 +186,7 @@ function queuefile () {
   else
     veflog "File path __${filepath}__ does not appear to exist so it will not be queued"
     debug "! Check to see if the script is being passed a properly quoted path/filename"
+    #(TODO) remove queue file and log it instead of failing
     #usage (TODO)
     exit 1
   fi
@@ -191,12 +223,12 @@ function getdvruuid () {
 function getcount () {
   local re='"([^"]*)": ([0-9]+),' # Regex to parse tvheadend dvr log format, looking for numbers
   local search=${1:-"data_errors"} # set our search term that we are going to parse
-    debug "func getcount: search = ${search}"
+  debug "func getcount: search = ${search}"
+  debug "func getcount filerecloc = ${filerecloc}"
+  debug "func getdvruuid command = grep -l ${filerecloc} ${tvhdvrlog}/*"
   local dvruuid="$(getdvruuid)"
     if [ "$?" -gt "0" ]; then
       veflog "Warning: Something might be wrong with the dvr log files permissions OR the script might not be parsing the file output correctly OR there might not be a log for this recording. Is the correct tvheadend path set and/or does this user have the proper permissons?"
-      debug "func getcount filerecloc = ${filerecloc}"
-      debug "func getdvruuid command = grep -l ${filerecloc} ${tvhdvrlog}/*"
     fi
 
     #debug "Bash rematch search through dvruuid file"
@@ -207,7 +239,7 @@ function getcount () {
 
 # check if open
 # Uses `inotifywait` to see if the recording is open
-# If the file is NOT open the exit cod ("$?") returns 2 (as per the inotifywait man page)
+# If the file is NOT open the exit code ("$?") returns 2 (as per the inotifywait man page)
 # A filename MUST be provided as an argument
 function checkifopen () {
   /bin/inotifywait -t 2 "${1}" >/dev/null 2>&1 # set it to watch for 2 seconds if anything is happening to the file
@@ -217,10 +249,10 @@ function checkifopen () {
 # settemp
 # Setup our temp directory
 function settemp () {
-  if [ -z ${tmpdirloc} ];then
-    thistmpdir=${tmpdirloc}
+  if [ -z "${tmpdirloc}" ];then
+    thistmpdir="${tmpdirloc}"
   else
-    thistmpdir=${recdir}
+    thistmpdir="${recdir}"
   fi
     
   tmpdir=$(mktemp -d "${thistmpdir}/.XXXXXXXXXXXX")
@@ -233,8 +265,8 @@ function settemp () {
 # rmtemp
 # Removes the temp directory with all files inside if the tmpdir variable is set
 function rmtemp () {
-  if [ ! -z ${tmpdir} ]; then
-    debug "Long listing of tmpdir:"
+  if [ ! -z "${tmpdir}" ]; then
+    debug "Long listing of tmpdir: (post move, pre directory removal)"
     debug "$(ls -l "${tmpdir}")" # This tells you if anything was in the directory being removed
     rm -rf "${tmpdir}"
     debug "Temporary directory ${tmpdir} removed"
@@ -255,11 +287,11 @@ function process () {
   # This is simply a "stream copy" to cleanup the video container meta-data, which is very fast and more times then not enough to make the video watchable, but doesn't help if the player can't work through the encoding errors
   veflog "Begin processing (ffmpeg stream copy) file: ${recfile}"
 
-  ffmpeg -err_detect ignore_err -loglevel fatal -f mpegts -i "${filerecloc}" -c copy "${tmpdir}/${recfile}" >>${logloc} 2>&1 || { veflog "Warning: Something happened when trying to process the recording"; }
+  ffmpeg -err_detect ignore_err -loglevel ${ffmpegloglevel} -f mpegts -i "${filerecloc}" -c copy "${tmpdir}/${recfile}" >>${logloc} 2>&1 || { veflog "Warning: Something happened when trying to process the recording"; }
 
   # options explained:
   #  "-err_detect ignore_err" is practically undocumented but apparently helps if there are filesystem errors (will ignore and keep going).
-  #  "-loglevel fatal" is the amount of ffmpeg output going into our log file. This setting keeps it to what would stop ffmpeg, like a fatal error.
+  #  "-loglevel" is the amount of ffmpeg output going into our log file. This setting keeps it to what would stop ffmpeg, like an error.
   #  "-f mpegts" is specifying that this recording is the format of "mpegts". This is necessary because certain filenames in recordings (such as "Jeopardy!" will break ffmpeg's auto detection of file type (the .ts on the end).
   #  "-i "${filerecloc}"" input file, which in our case is the actual location of our recording.
   #  "-c copy "${tmpdir}/${recfile}"" This specifies this is to be a stream copy and where to put the output file.
@@ -280,12 +312,17 @@ function movefile () {
       veflog "Recording has closed"
     else
       veflog "Recording not open, proceding"
+      debug "Long listing of tmpdir: (pre move; the processed video should show here)"
+      debug "$(ls -l "${tmpdir}")" # This should list the video file before it gets moved
     fi
   fi
 
   # Verify our new file exists before moving forward
   if [ ! -f "${tmpdir}/${recfile}" ]; then
-    veflog "The processed video doesn't appear to exist or is inaccessble, exiting"
+    veflog "The processed video doesn't appear to exist or is inaccessble, exiting."
+    exit 5
+  elif [ ! -s "${tmpdir}/${recfile}" ]; then
+    veflog "The processed video appears to be empty - enable debug and check if ffmpeg is working. Exiting."
     exit 5
   fi
 
@@ -319,7 +356,8 @@ function processqueue () {
     # Get recording error count
     errorcount=$(getcount)
     if [ -z ${errorcount} ]; then
-      veflog "!ERROR! No error count found in the dvr log for the video file, so something is wrong (func getcount)"
+      veflog "!ERROR! No error count found in the dvr log for the video file, so the recorded file was probably deleted from tvheadend"
+      debug "In func processqueue after calling on func getcount"
       exit 1
 	#TODO: REPLACE this error with a check to see if the rec still exists and log and remove queuefile if it no longer exists, and then move on. Otherwise this gets stuck in an endless loop of erroring here on the same file.
     fi
@@ -333,14 +371,24 @@ function processqueue () {
       rmtemp
       # record that we've processed this video file in the process log
       declare timestamp="$(date '+%y%m%d%H%M%S')"
-      echo "Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+      if [ "${testrun}" == "yes" ]; then
+        echo "TESTRUN:::(wouldhave)Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+      else
+        echo "Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+      fi
     else
       veflog "Error count (${errorcount}) is less than set threshold (${dvrerrorthreshold}), or there is an error somewhere, skipping processing"
       #echo "Skipped   ${queuefile} :: ${filerecloc}" >> ${plogloc}
     fi
 
     #Remove the queue file, because it is either now processed or skipped
-    rm ${qdir}/${procqueuefile} || { ((${loopbreak}+=1)); veflog "Could not remove queue file for some reason, so something is wrong [${loopbreak}]"; }
+    if [ "${testrun}" == "yes" ]; then
+      veflog "Test run! ---> skipping removal of queue file! < ---" 
+      veflog "Test run! ---> exiting, or else will be in an endless loop of this oldest queue file"
+      exit
+    else
+      rm ${qdir}/${procqueuefile} || { ((${loopbreak}+=1)); veflog "Could not remove queue file for some reason, so something is wrong [${loopbreak}]"; }
+    fi
 
     if [ ${loopbreak} -gt ${looplimit} ]; then
       break
@@ -361,7 +409,7 @@ function checkffmpeg () {
 
 function closeup () {
   rmtemp
-  #veflog "### Script complete ###"
+  debug "### Script run complete ###"
   exit
 }
 
@@ -383,7 +431,7 @@ trap sig_closeup INT QUIT TERM
 ### Script variables & validation
 ##############################################################################
 
-declare -r mypid="$$" # used for logging and mostly so if there are two runs at the same time we can tell them apart
+declare -r mypid="$$" # used for logging
 declare -r tvhdvrlog="${tvhhome}/config/dvr/log" # need to know where to find the dvr logs
 
 
@@ -411,6 +459,7 @@ case "${1}" in
     ;;
   -p | --process )
     # read from queue until no more queue or error out
+    checkifproccessing
     checkffmpeg
     processqueue
     ;;
