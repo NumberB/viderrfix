@@ -7,7 +7,18 @@ This script runs in the bash shell and is called on by tvheadend as a post-proce
 
 Presently this will only work with standard recordings, which are in mpeg2 transport stream format (mpegts). In tvheadend this is the default recording method (aka pass-thru).
 
-_Update:_ This revision 2 I've had running for a few years and it changes up how the script works by placing the video recordings in a queue and then processing them on a timer. Only recently encountered a pretty big issue with it which I am currently in the process of updating, hence the first update here in years.
+_Update:_ Since revision 2 the script works by placing the video recordings in a queue and then processing them on a timer. The one or two "big" issues that I discovered have been fixed with revision 3.
+
+## UPDATES (v3)
+1. added variable for ffmpeg log level
+2. added another check to verify processed video is not empty before overwriting original
+3. fixed rmtemp function where it wouldn't remove the temp dir if there was a space in the name
+4. added and tested support for testrun with the process queue
+5. made it so a filename could not be queued more than once
+6. made it so the script will not process again if the script is already running (pid check before processing the queue)
+7. hopefully made it so we won't have duplicate queue files that can squash each other generating a mangled file the process queue would choke on
+8. updated some debug text to make it more obvious what is happening, especially with pre and post processed video moves
+9. updated some syntax to make things more consistent
 
 ## UPDATES (v2)
 1. added viderrfix-deprecated directory and moved old viderrfix.sh into it with the old instructions
