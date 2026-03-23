@@ -45,6 +45,9 @@ declare -r qloc="${tvhhome}/.vef"
 declare -r qdir="${qloc}/queue"
 declare -r plogloc="${qloc}/processed.log"
 
+# Remove a queue file if it doesn't appear to exist?
+declare rmemptyqueuefile=true
+
 # Is this a testrun?
 # We will process as usual but NOT overwrite the original recording (we won't keep the processed video either)
 declare -r testrun="no" 
@@ -96,7 +99,7 @@ function clean() {
 }
 
 function checkifproccessing () {
-    if pidof -o %PPID -x "vef.sh">/dev/null; then
+    if /usr/sbin/pidof -o %PPID -x "vef.sh">/dev/null; then
       veflog "A vef.sh process has been found already running, exiting..."
       exit 1
     fi
@@ -347,6 +350,7 @@ function processqueue () {
 
   while [ "${procqueuefile}" != "queuenull" ]; do
     declare filerecloc="$(/bin/cat ${qdir}/${procqueuefile})"
+    declare nullfile=false
 
     #declare -r recdir="$(dirname "${filerecloc}")" # directory where the recording resides (alternative method)
     declare recdir=${filerecloc%/*} # directory where the recording resides [BASH]
@@ -356,44 +360,52 @@ function processqueue () {
     # Get recording error count
     errorcount=$(getcount)
     if [ -z ${errorcount} ]; then
-      veflog "!ERROR! No error count found in the dvr log for the video file, so the recorded file was probably deleted from tvheadend"
+      veflog "!Warning! No error count found in the dvr log for the video file, so the recorded file was probably deleted from tvheadend"
       debug "In func processqueue after calling on func getcount"
-      exit 1
-	#TODO: REPLACE this error with a check to see if the rec still exists and log and remove queuefile if it no longer exists, and then move on. Otherwise this gets stuck in an endless loop of erroring here on the same file.
+      if [ "${rmemptyqueuefile}" = true ]; then
+        declare nullfile=true
+        debug "Var rmemptyqueuefile is set to true"
+        veflog "Removing empty queue file: ${procqueuefile}"
+        rm ${qdir}/${procqueuefile} && echo "RemovedEmptyQueueFile:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+      fi
     fi
   
-    # Does this recording have more errors then our threshold count? If so, process. If not, don't.
-    if [ "${errorcount}" -ge "${dvrerrorthreshold}" ]; then
-      veflog "Error count (${errorcount}) meets or exceeds set threshold (${dvrerrorthreshold}), processing..."
-      settemp # create our temp directory to store the processed video
-      process # process the video, putting it into the temp directory
-      movefile # overwrite the processed video over the original video
-      rmtemp
-      # record that we've processed this video file in the process log
-      declare timestamp="$(date '+%y%m%d%H%M%S')"
-      if [ "${testrun}" == "yes" ]; then
-        echo "TESTRUN:::(wouldhave)Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+    if [ ${nullfile} = false ]; then
+
+      # Does this recording have more errors then our threshold count? If so, process. If not, don't.
+      if [ "${errorcount}" -ge "${dvrerrorthreshold}" ]; then
+        veflog "Error count (${errorcount}) meets or exceeds set threshold (${dvrerrorthreshold}), processing..."
+        settemp # create our temp directory to store the processed video
+        process # process the video, putting it into the temp directory
+        movefile # overwrite the processed video over the original video
+        rmtemp
+        # record that we've processed this video file in the process log
+        declare timestamp="$(date '+%y%m%d%H%M%S')"
+        if [ "${testrun}" == "yes" ]; then
+          echo "TESTRUN:::(wouldhave)Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+        else
+          echo "Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+        fi
       else
-        echo "Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+        veflog "Error count (${errorcount}) is less than set threshold (${dvrerrorthreshold}), or there is an error somewhere, skipping processing"
+        #echo "Skipped   ${queuefile} :: ${filerecloc}" >> ${plogloc}
       fi
-    else
-      veflog "Error count (${errorcount}) is less than set threshold (${dvrerrorthreshold}), or there is an error somewhere, skipping processing"
-      #echo "Skipped   ${queuefile} :: ${filerecloc}" >> ${plogloc}
-    fi
+  
+      #Remove the queue file, because it is either now processed or skipped
+      if [ "${testrun}" == "yes" ]; then
+        veflog "Test run! ---> skipping removal of queue file! < ---" 
+        veflog "Test run! ---> exiting, or else will be in an endless loop of this oldest queue file"
+        exit
+      else
+        rm ${qdir}/${procqueuefile} || { ((${loopbreak}+=1)); veflog "Could not remove queue file for some reason, so something is wrong [${loopbreak}]"; }
+      fi
+  
+      if [ ${loopbreak} -gt ${looplimit} ]; then
+        break
+        veflog "!ERROR! Something is wrong! Looplimit (${looplimit}) iteration reached, so we are breaking the endless loop and exiting the script"
+        exit 5
+      fi
 
-    #Remove the queue file, because it is either now processed or skipped
-    if [ "${testrun}" == "yes" ]; then
-      veflog "Test run! ---> skipping removal of queue file! < ---" 
-      veflog "Test run! ---> exiting, or else will be in an endless loop of this oldest queue file"
-      exit
-    else
-      rm ${qdir}/${procqueuefile} || { ((${loopbreak}+=1)); veflog "Could not remove queue file for some reason, so something is wrong [${loopbreak}]"; }
-    fi
-
-    if [ ${loopbreak} -gt ${looplimit} ]; then
-      break
-      veflog "!ERROR! Something is wrong! Looplimit (${looplimit}) iteration reached, so we are breaking the endless loop and exiting the script"
-      exit 5
     fi
 
     #queue next file
@@ -444,6 +456,7 @@ command -v inotifywait >/dev/null 2>&1 || { writewait="no"; veflog "This script 
 ##############################################################################
 #  Main
 ##############################################################################
+debug "### Script run begin ###"
 checklog #to ensure logging works
 verifymeta #to ensure our metadata directory and file exist
 
