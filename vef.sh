@@ -42,6 +42,7 @@ declare tmpdirloc="/tvhtmp"
 declare -r qloc="${tvhhome}/.vef"
 declare -r qdir="${qloc}/queue"
 declare -r plogloc="${qloc}/processed.log"
+declare -r lockfile="${qloc}/vef.lock"
 
 # Remove a queue file if it doesn't appear to exist?
 declare rmemptyqueuefile=true
@@ -145,11 +146,23 @@ function listqueuedfiles () {
   echo -e "==============================\n"
 }
 
+#function checkifprocessing () {
+#    if /usr/sbin/pidof -o %PPID -x "vef.sh">/dev/null; then
+#      veflog "A vef.sh process has been found already running, exiting..."
+#      exit 1
+#    fi
+#}
 function checkifprocessing () {
-    if /usr/sbin/pidof -o %PPID -x "vef.sh">/dev/null; then
-      veflog "A vef.sh process has been found already running, exiting..."
-      exit 1
-    fi
+  # Open file descriptor 9 and point it to the lockfile
+  exec 9> "${lockfile}"
+
+  # Attempt to acquire an exclusive, non-blocking lock on FD 9
+  if ! flock -n 9; then
+    veflog "A vef.sh process is already running (lock active), exiting..."
+    exit 1
+  fi
+  # If successful, the script continues. The lock is held automatically
+  # until the script finishes and FD 9 is closed by the OS.
 }
 
 # Check log file
@@ -552,6 +565,7 @@ declare -r tvhdvrlog="${tvhhome}/config/dvr/log" # need to know where to find th
 
 
 # Validate necessary external applications
+command -v flock >/dev/null 2>&1 || { echo "Error: 'flock' is required but not installed." >&2; exit 1; }
 command -v inotifywait >/dev/null 2>&1 || { writewait="no"; veflog "This script requires the `inotifywait` program to wait to overwrite the recording with the processed video. Setting to not wait."; }
 
 
