@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# vef.sh, which is: viderrfix.sh | Revision 3
+# vef.sh, which is: viderrfix.sh | Revision 4 (in-development)
 #
 # Post Processing script for tvheadend on recorded .ts files (mpeg2)
 # (but could be updated to process however you want)
@@ -35,7 +35,7 @@ declare -r -i dvrerrorthreshold=20
 
 # Where would you like this script to log to?
 declare -r logloc="${tvhhome}/vef.log"
-declare -r -i logdebug=1 # 0 = no debug log, 1 = yes debug log
+declare -r -i logdebug=0 # 0 = no debug log, 1 = yes debug log
 
 # Uncomment and set this if you want to change where temporary files are set while being processed
 declare tmpdirloc="/tvhtmp"
@@ -98,7 +98,7 @@ function clean() {
     echo "${a,,}"
 }
 
-function checkifproccessing () {
+function checkifprocessing () {
     if /usr/sbin/pidof -o %PPID -x "vef.sh">/dev/null; then
       veflog "A vef.sh process has been found already running, exiting..."
       exit 1
@@ -118,17 +118,17 @@ function checklog () {
 function verifymeta () {
   if [ ! -d "${qloc}" ];then
     veflog "Metadata directory __${qloc}__ does not exist; creating it."
-    mkdir -p ${qloc} || { echo "Cannot create __${qloc}__ directory! Check path, filename & permissions!!!"; exit 1; }
-    chmod 750 ${qloc} || { echo "Error changing permissions on __${qloc}__ directory! Check path, filename & permissions!!!"; }
+    mkdir -p "${qloc}" || { echo "Cannot create __${qloc}__ directory! Check path, filename & permissions!!!"; exit 1; }
+    chmod 750 "${qloc}" || { echo "Error changing permissions on __${qloc}__ directory! Check path, filename & permissions!!!"; }
   fi
   if [ ! -d "${qdir}" ];then
     veflog "Queue directory __${qdir}__ does not exist; creating it."
-    mkdir -p ${qdir} || { echo "Cannot create __${qdir}__ directory! Check path, filename & permissions!!!"; exit 1; }
-    chmod 750 ${qdir} || { echo "Error changing permissions on __${qdir}__ directory! Check path, filename & permissions!!!"; }
+    mkdir -p "${qdir}" || { echo "Cannot create __${qdir}__ directory! Check path, filename & permissions!!!"; exit 1; }
+    chmod 750 "${qdir}" || { echo "Error changing permissions on __${qdir}__ directory! Check path, filename & permissions!!!"; }
   fi
   if [ ! -f "${plogloc}" ];then
-    veflog "Processs log file __${plogloc}__ does not exist; creating it."
-    touch ${plogloc} || { echo "Cannot create process log file! Check path, filename & permissions!!!"; exit 1; }
+    veflog "Process log file __${plogloc}__ does not exist; creating it."
+    touch "${plogloc}" || { echo "Cannot create process log file! Check path, filename & permissions!!!"; exit 1; }
   fi
 }
 
@@ -137,14 +137,22 @@ function verifymeta () {
 #  grep -q "${filepath}" ${plogloc}
 #}
 
+#function checkplogproc () {
+#  debug "Checking the processed log for if this file has been processed"
+#  grep -E -q "^Processed:.*${filepath}$" ${plogloc}
+#}
 function checkplogproc () {
   debug "Checking the processed log for if this file has been processed"
-  grep -E -q "^Processed:.*${filepath}$" ${plogloc}
+  grep "^Processed:" "${plogloc}" | grep -F -q "${filepath}"
 }
 
+#function checkplogqueue () {
+#  debug "Checking the processed log for if this file has been queued"
+#  grep -E -q "^Queued:.*${filepath}$" ${plogloc}
+#}
 function checkplogqueue () {
   debug "Checking the processed log for if this file has been queued"
-  grep -E -q "^Queued:.*${filepath}$" ${plogloc}
+  grep "^Queued:" "${plogloc}" | grep -F -q "${filepath}"
 }
 
 function buildqueuefile () {
@@ -209,13 +217,16 @@ function queuereadlast () {
 }
 
 # Get DVR Log file UUID
-function getdvruuid () {
-  /bin/grep -l "${filerecloc}" "${tvhdvrlog}"/* 2>&1
+#function getdvruuid () {
+#  /bin/grep -l "${filerecloc}" "${tvhdvrlog}"/* 2>&1
   #if [ "$?" -gt "0" ]; then
   #  veflog "Warning: Something might be wrong with the dvr log files permissions OR the script might not be parsing the file output correctly OR there might not be a log for this recording. Is the correct tvheadend path set and/or does this user have the proper permissons?"
   #  debug "func getdvruuid filerecloc = ${filerecloc}"
   #  debug "func getdvruuid command = grep -l ${filerecloc} ${tvhdvrlog}/*"
   #fi
+#}
+function getdvruuid () {
+  find "${tvhdvrlog}" -type f -exec grep -l -F "${filerecloc}" {} + 2>/dev/null | head -n 1
 }
 
 # 'getcount'
@@ -230,14 +241,18 @@ function getcount () {
   debug "func getcount filerecloc = ${filerecloc}"
   debug "func getdvruuid command = grep -l ${filerecloc} ${tvhdvrlog}/*"
   local dvruuid="$(getdvruuid)"
-    if [ "$?" -gt "0" ]; then
+    #if [ "$?" -gt "0" ]; then
+    if [ -z "${dvruuid}" ]; then
       veflog "Warning: Something might be wrong with the dvr log files permissions OR the script might not be parsing the file output correctly OR there might not be a log for this recording. Is the correct tvheadend path set and/or does this user have the proper permissons?"
     fi
 
     #debug "Bash rematch search through dvruuid file"
-  [[ $(grep ${search} "${dvruuid}") =~ ${re} ]] && local count=${BASH_REMATCH[2]}
+  if [[ $(grep "${search}" "${dvruuid}") =~ ${re} ]]; then
+    local count="${BASH_REMATCH[2]}"
+  fi
     debug "func getcount: ${search} = ${count}"
-  printf ${count}
+  #printf ${count}
+  printf "%s" "${count}"
 }
 
 # check if open
@@ -290,7 +305,7 @@ function process () {
   # This is simply a "stream copy" to cleanup the video container meta-data, which is very fast and more times then not enough to make the video watchable, but doesn't help if the player can't work through the encoding errors
   veflog "Begin processing (ffmpeg stream copy) file: ${recfile}"
 
-  ffmpeg -err_detect ignore_err -loglevel ${ffmpegloglevel} -f mpegts -i "${filerecloc}" -c copy "${tmpdir}/${recfile}" >>${logloc} 2>&1 || { veflog "Warning: Something happened when trying to process the recording"; }
+  ffmpeg -nostdin -err_detect ignore_err -loglevel "${ffmpegloglevel}" -f mpegts -i "${filerecloc}" -c copy "${tmpdir}/${recfile}" >> "${logloc}" 2>&1 || { veflog "Warning: Something happened when trying to process the recording"; }
 
   # options explained:
   #  "-err_detect ignore_err" is practically undocumented but apparently helps if there are filesystem errors (will ignore and keep going).
@@ -314,7 +329,7 @@ function movefile () {
       sleep 3 # short break after file closes
       veflog "Recording has closed"
     else
-      veflog "Recording not open, proceding"
+      veflog "Recording not open, proceeding"
       debug "Long listing of tmpdir: (pre move; the processed video should show here)"
       debug "$(ls -l "${tmpdir}")" # This should list the video file before it gets moved
     fi
@@ -349,7 +364,7 @@ function processqueue () {
   local looplimit=5 #Arbitrary number
 
   while [ "${procqueuefile}" != "queuenull" ]; do
-    declare filerecloc="$(/bin/cat ${qdir}/${procqueuefile})"
+    declare filerecloc="$(/bin/cat "${qdir}/${procqueuefile}")"
     declare nullfile=false
 
     #declare -r recdir="$(dirname "${filerecloc}")" # directory where the recording resides (alternative method)
@@ -359,18 +374,18 @@ function processqueue () {
 
     # Get recording error count
     errorcount=$(getcount)
-    if [ -z ${errorcount} ]; then
+    if [ -z "${errorcount}" ]; then
       veflog "!Warning! No error count found in the dvr log for the video file, so the recorded file was probably deleted from tvheadend"
       debug "In func processqueue after calling on func getcount"
       if [ "${rmemptyqueuefile}" = true ]; then
         declare nullfile=true
         debug "Var rmemptyqueuefile is set to true"
         veflog "Removing empty queue file: ${procqueuefile}"
-        rm ${qdir}/${procqueuefile} && echo "RemovedEmptyQueueFile:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+        rm "${qdir}/${procqueuefile}" && echo "RemovedEmptyQueueFile:${timestamp},${procqueuefile},${filerecloc}" >> "${plogloc}"
       fi
     fi
   
-    if [ ${nullfile} = false ]; then
+    if [ "${nullfile}" = false ]; then
 
       # Does this recording have more errors then our threshold count? If so, process. If not, don't.
       if [ "${errorcount}" -ge "${dvrerrorthreshold}" ]; then
@@ -382,9 +397,9 @@ function processqueue () {
         # record that we've processed this video file in the process log
         declare timestamp="$(date '+%y%m%d%H%M%S')"
         if [ "${testrun}" == "yes" ]; then
-          echo "TESTRUN:::(wouldhave)Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+          echo "TESTRUN:::(wouldhave)Processed:${timestamp},${procqueuefile},${filerecloc}" >> "${plogloc}"
         else
-          echo "Processed:${timestamp},${procqueuefile},${filerecloc}" >> ${plogloc}
+          echo "Processed:${timestamp},${procqueuefile},${filerecloc}" >> "${plogloc}"
         fi
       else
         veflog "Error count (${errorcount}) is less than set threshold (${dvrerrorthreshold}), or there is an error somewhere, skipping processing"
@@ -395,13 +410,16 @@ function processqueue () {
       if [ "${testrun}" == "yes" ]; then
         veflog "Test run! ---> skipping removal of queue file! < ---" 
         veflog "Test run! ---> exiting, or else will be in an endless loop of this oldest queue file"
-        exit
+        exit 0
       else
-        rm ${qdir}/${procqueuefile} || { ((${loopbreak}+=1)); veflog "Could not remove queue file for some reason, so something is wrong [${loopbreak}]"; }
+        #rm ${qdir}/${procqueuefile} || { ((${loopbreak}+=1)); veflog "Could not remove queue file for some reason, so something is wrong [${loopbreak}]"; }
+        if ! rm "${qdir}/${procqueuefile}"; then
+          ((loopbreak+=1))
+          veflog "Could not remove queue file for some reason, so something is wrong [${loopbreak}]"
+        fi
       fi
   
-      if [ ${loopbreak} -gt ${looplimit} ]; then
-        break
+      if [ "${loopbreak}" -gt "${looplimit}" ]; then
         veflog "!ERROR! Something is wrong! Looplimit (${looplimit}) iteration reached, so we are breaking the endless loop and exiting the script"
         exit 5
       fi
@@ -472,7 +490,7 @@ case "${1}" in
     ;;
   -p | --process )
     # read from queue until no more queue or error out
-    checkifproccessing
+    checkifprocessing
     checkffmpeg
     processqueue
     ;;
