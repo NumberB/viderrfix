@@ -5,8 +5,6 @@
 # Post Processing script for tvheadend on recorded .ts files (mpeg2)
 # (but could be updated to process however you want)
 #
-# Usage (TODO)
-
 ####################
 # USAGE INSTRUCTIONS
 
@@ -92,10 +90,59 @@ function debug () {
   fi
 }
 
+#Usage
+function show_usage () {
+  cat << 'EOF'
+Usage: vef.sh [OPTION] | [FILEPATH]
+
+vef.sh - Post-processing script for Tvheadend on recorded .ts files.
+
+Options:
+  -p, --process    Process the queue of recorded files.
+  -l, --list       List queued files.
+  -f, --file       Process a specific file directly.
+  -h, -u, --help   Display this usage information.
+
+Tvheadend Integration:
+  1) ADD THE PROCESSING TO THE CRONTAB!
+     "crontab -e -u hts" (or the user running tvheadend)
+     # VEF Processing every half hour
+     2,32 * * * * /usr/local/bin/vef.sh -p
+
+  2) ADD THE SCRIPT PATH TO EACH RECORDING PROFILE
+     - In the tvheadend web ui, go to "Configuration > Recording > Digital Video Recording Profiles"
+     - Under "Miscellaneous Settings > Post-processor command", input:
+       /usr/local/bin/vef.sh "%f"
+     - Click "Save"
+EOF
+  exit 0
+}
+
 function clean() {
     # BASH 4+ function
     local a=${1//[^[:alnum:]]/}
     echo "${a,,}"
+}
+
+function listqueuedfiles () {
+  # Load directory contents into an array to safely check if it's empty
+  local files=("${qdir}"/*)
+
+  if [ ! -e "${files[0]}" ]; then
+    echo "The queue is currently empty."
+    return
+  fi
+
+  echo -e "\n=== Currently Queued Files ==="
+  for qfile in "${qdir}"/*; do
+    if [ -f "${qfile}" ]; then
+      local qfilename="${qfile##*/}"
+      local recloc="$(cat "${qfile}")"
+      echo "[Queue File]: ${qfilename}"
+      echo "  -> Target:  ${recloc}"
+    fi
+  done
+  echo -e "==============================\n"
 }
 
 function checkifprocessing () {
@@ -197,8 +244,7 @@ function queuefile () {
   else
     veflog "File path __${filepath}__ does not appear to exist so it will not be queued"
     debug "! Check to see if the script is being passed a properly quoted path/filename"
-    #(TODO) remove queue file and log it instead of failing
-    #usage (TODO)
+    echo "Error: Filepath does not exist. Run '$(basename "${0}") -h' for usage instructions." >&2
     exit 1
   fi
 }
@@ -244,6 +290,7 @@ function getcount () {
     #if [ "$?" -gt "0" ]; then
     if [ -z "${dvruuid}" ]; then
       veflog "Warning: Something might be wrong with the dvr log files permissions OR the script might not be parsing the file output correctly OR there might not be a log for this recording. Is the correct tvheadend path set and/or does this user have the proper permissons?"
+      return 1
     fi
 
     #debug "Bash rematch search through dvruuid file"
@@ -431,6 +478,45 @@ function processqueue () {
   done #end while loop
 }
 
+function process_single_file () {
+  local targetfile="${1}"
+
+  if [ ! -f "${targetfile}" ]; then
+    echo "Error: Target file '${targetfile}' does not exist." >&2
+    exit 1
+  fi
+
+  # Set the variables required
+  declare filerecloc="${targetfile}"
+  declare recdir="${filerecloc%/*}"
+  declare recfile="${filerecloc##*/}"
+
+  veflog "Manual processing triggered for: ${filerecloc}"
+
+  # Check if it was already processed, warn the user but proceed anyway
+  declare filepath="${filerecloc}"
+  if checkplogproc; then
+    echo "Warning: This file is already in the processed log. Processing anyway..."
+    veflog "Warning: Manual override on already-processed file."
+  fi
+
+  # workflow
+  settemp
+  process
+  movefile
+  rmtemp
+
+  # Log the manual execution
+  declare timestamp="$(date '+%y%m%d%H%M%S')"
+  if [ "${testrun}" == "yes" ]; then
+    echo "TESTRUN:::(wouldhave)Processed:${timestamp},MANUAL_OVERRIDE,${filerecloc}" >> "${plogloc}"
+  else
+    echo "Processed:${timestamp},MANUAL_OVERRIDE,${filerecloc}" >> "${plogloc}"
+  fi
+
+  echo "Finished manual processing of ${recfile}"
+}
+
 function checkffmpeg () {
   command -v ffmpeg >/dev/null 2>&1 || { veflog "This script requires the `ffmpeg` program to process video. Exiting. "; exit 1; }
 }
@@ -478,15 +564,27 @@ debug "### Script run begin ###"
 checklog #to ensure logging works
 verifymeta #to ensure our metadata directory and file exist
 
+# Catch empty execution
+if [ -z "${1}" ]; then
+  show_usage
+fi
+
 case "${1}" in
+  -h | -u | --help | --usage )
+    show_usage
+    ;;
   -l | --list )
-    echo "List queued files"
-    echo "not implemented yet" #(TODO)
+    listqueuedfiles
     ;;
   -f | --file )
-    # Validate $2
-    # Process file
-    echo "not implemented yet" #(TODO)
+    if [ -z "${2}" ]; then
+      echo "Error: Must provide a filepath." >&2
+      echo "Usage: $(basename "${0}") -f /path/to/recording.ts" >&2
+      exit 1
+    fi
+    checkifprocessing
+    checkffmpeg
+    process_single_file "${2}"
     ;;
   -p | --process )
     # read from queue until no more queue or error out
