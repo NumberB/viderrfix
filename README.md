@@ -1,49 +1,58 @@
-# viderrfix
-TVHeadEnd post processing script to fix _basic_ container recording errors
+# viderrfix (vef.sh)
 
-Sometimes recordings aren't perfect. Even if you have great reception and typically conditions are excellent; inevitably there will be a fart in the solar wind and you will get errors in your recording. This script is to help with those. It uses ffmpeg to create a stream copy of recording which is usually enough to fix most container errors. It isn't a "video fix" end-all be-all by any means, but it is better than nothing. If your recording was too terrible then there's nothing that can be done.
+A robust Tvheadend post-processing script written in BASH to repair _basic_ container recording errors using `ffmpeg` and perform automated commercial detection using `comskip`.
 
-This script runs in the bash shell and is called on by tvheadend as a post-processor command. It compares the amount of data errors to a threshold you set and if met it will process the recording and then overwrite the original recording with your processed copy. This generally makes the file a little bigger (seems to be about 5-8% larger), but it does help troublesome files to play more reliably. 
+Sometimes recordings aren't perfect. Even with great reception, signal drops can introduce audio/video data errors into MPEG-TS (`.ts`) files. `vef.sh` checks Tvheadend DVR logs, stream-copies corrupted files to repair timestamp/container issues, and optionally runs Comskip using smart EPG profile matching—all with kernel-level process safety and non-blocking playback protection.
 
-Presently this will only work with standard recordings, which are in mpeg2 transport stream format (mpegts). In tvheadend this is the default recording method (aka pass-thru).
+---
 
-_Update:_ Since revision 2 the script works by placing the video recordings in a queue and then processing them on a timer. The one or two "big" issues that I discovered have been fixed with revision 3.
+## What's New in v4
 
-## UPDATES (v3)
-1. added variable for ffmpeg log level
-2. added another check to verify processed video is not empty before overwriting original
-3. fixed rmtemp function where it wouldn't remove the temp dir if there was a space in the name
-4. added and tested support for testrun with the process queue
-5. made it so a filename could not be queued more than once
-6. made it so the script will not process again if the script is already running (pid check before processing the queue)
-7. hopefully made it so we won't have duplicate queue files that can squash each other generating a mangled file the process queue would choke on
-8. updated some debug text to make it more obvious what is happening, especially with pre and post processed video moves
-9. updated some syntax to make things more consistent
+1. **Comskip Integration & Smart Profiling**:
+   * Automated commercial scanning using `comskip`.
+   * **Smart Profile Matching**: Dynamically selects specific `comskip.ini` profiles based on EPG metadata rules (`title`, `channelname`, or `alltext` which checks title, subtitle, and description).
+   * **Sidecar File Management**: Automatically moves generated `.edl`, `.txt`, or `.vdr` files to the recording directory alongside the video.
+2. **Two-Flow Queue Architecture**:
+   * **Path A (Errors ≥ Threshold)**: Stream-copies video into a temporary folder to fix errors, runs Comskip on the clean file in `tmpdir`, then swaps the video and moves sidecars together.
+   * **Path B (Errors < Threshold)**: Skips `ffmpeg` repair entirely and runs Comskip in-place directly on the recording file.
+3. **Enhanced Concurrency & Safety**:
+   * Replaced `pidof` with kernel-level `flock` locks to prevent duplicate cron runs.
+   * Uses `lsof` pre-flight checks to detect active write locks (preventing premature processing of active recordings).
+   * Language-agnostic DVR log parsing using `jq`.
+4. **Expanded CLI Controls**:
+   * Added `-r` (Repair Only), `-c` (Comskip Only), and `-b` / `-f` (Both).
+   * Consolidated interactive CLI prompts for previously processed files or overwriting existing sidecars.
+   * Backgrounding support (`Ctrl+Z`, then `bg`) when waiting for active playback locks (`inotifywait`) to close.
 
-## UPDATES (v2)
-1. added viderrfix-deprecated directory and moved old viderrfix.sh into it with the old instructions
-2. added vef.sh revision 2 (has issues and is still being updated)
-3. updated README with current VEF instructions and other minor updates
+## AI use disclosure
+I've worked on this script off and on since 2018, long before AI use became mainstream. All the core logic and commands on this script have been tested for years against my own setup, but I wanted to disclose that I did use AI assistance with this v4 update to include comskip integration and other recent updates. I know some are sensitive to this but I wouldn't have time to update this otherwise.
+   
+---
 
-## How to use
+## Prerequisites
 
-### Prerequisites
+* **BASH** (4.0 or newer)
+* **`ffmpeg`**: Required for video container stream-copy repair.
+* **`jq`**: Required for parsing Tvheadend DVR log JSON files.
+* **`lsof`**: Required for pre-flight active write/read handle checks.
+* **`flock`** (part of `util-linux`): Required for script concurrency locking.
+* **`inotifywait`** (optional but recommended): Prevents overwriting files while actively being watched.
+* **`comskip`** (optional): Required for commercial detection. If missing, commercial scanning is auto-disabled.
 
-Obviously the BASH shell as this is a BASH script, though I haven't tested BASH 3 so some updates may be required if you wanted to run this on an older version.
+### Installation of Dependencies
 
-You **must** have `ffmpeg` installed and in the PATH of the user running the script (such as 'tvheadend').
-
-You *should* have `inotifywait` installed and in the PATH of the user running the script, as then you won't overwrite a recording you may already be watching!
-
-_Ubunutu / Debian_
-
+**Debian / Ubuntu**:
 ```bash
-apt-get install ffmpeg inotifywait
+sudo apt-get update
+sudo apt-get install ffmpeg inotifywait jq lsof util-linux comskip
 ```
-_RHEL / CentOS_
+Note: "comskip" typically isn't included with Debian packages and will likely need to be compiled from source.
+
+**RHEL / Fedora / Rocky**
 ```bash
-yum install ffmpeg inotifywait
+sudo dnf install ffmpeg inotify-tools jq lsof util-linux comskip
 ```
+
 
 ### Download the script and place it somewhere accessible to the user running the tvheadend application 
 
@@ -65,9 +74,14 @@ vim /usr/local/bin/vef.sh
 ```
 - Specify the root of the tvheadend config directory `tvhhome="/home/tvheadend"`
 - Specify how many data errors will trigger the script to process the video `dvrerrorthreshold=20`
+- Disable comskip by changing: enable_comskip="yes"
+- Set comskip default ini: comskip_ini_default="$tvhhome/comskip-profiles/comskip-default.ini"
+- Set comskip profile dir: comskip_ini_dir="$tvhhome/comskip-profiles"
+- Update comskip smartmatching rules under `declare -a comskip_rules=(`
+    NOTE: "alltext" searches "title", "subtitle" & "description"
 - If you want, change where the log file resides `logloc="${tvhhome}/viderrfix.log"`
 - If you want, turn on debugging in the log `logdebug=0` (1 turn's it on)
-- (Testing is currently not working) If this is your first run or you are still testing, leave `testrun="yes"` as "yes", but when you are ready to use the script remove "yes" or change it to "no" (_This is set to "yes" by default for your protection_)
+- If this is your first run or you are still testing, leave `testrun="yes"` as "yes", but when you are ready to use the script remove "yes" or change it to "no" (_This is set to "yes" by default for your protection_)
 
 ### When the script is setup (and tested), set it to run in tvheadend:
 
@@ -87,7 +101,8 @@ Click `Save`
 
 ### Update the crontab to process the queue
 ```bash
-crontab -e -u ${hts/tvheadend}  #Example: "crontab -e -u tvheadend"
+crontab -e -u ${hts/tvheadend}
+#Example: "crontab -e -u tvheadend"
 ```
 That is, the user that is running tvheadend, which is typically 'hts' or 'tvheadend'.
 
@@ -96,14 +111,52 @@ Insert these lines into the crontab of the tvheadend user and then save
 #VEF Processing every half hour
 2,32 * * * * /usr/local/bin/vef.sh -p
 ```
-Feel free to update the processing time to whatever you prefer. This is obviously going to process 2 minutes and 32 minutes after the hour every hour.
+Feel free to update the processing time to whatever you prefer. This is going to process 2 minutes and 32 minutes after the hour every hour.
+
+## Usage
+```bash
+Usage: vef.sh [OPTION] [FILEPATH]
+
+Automated Queue Execution:
+  vef.sh "%f"                  Queue a recording file from Tvheadend.
+  -p, --process                Process all queued recordings (used by cron).
+  -l, --list                   List all files currently in the queue.
+
+Manual Execution Overrides:
+  -r, --repair <file>          Run ONLY the ffmpeg video repair stream copy.
+  -c, --comskip <file>         Run ONLY Comskip commercial detection in-place.
+  -b, -f, --both <file>        Run BOTH video repair and Comskip on the target file.
+  -h, --help                   Display usage information.
+```
 
 
-## How to test -- TESTING IS BROKEN IN v2!
+## Testing & Manual Processing
 
-_Testing is broken currently in v2! Skip this section for now_
+You can test the script manually on any existing recording without waiting for Tvheadend post-processor events.
 
-You should test this first obviously, and here's how you can do that:
+1. Run a Manual Check (Both Repair & Comskip):
+```Bash
+/usr/local/bin/vef.sh -b "/path/to/recording.ts"
+```
+
+2. Run Comskip Only on a Clean Recording:
+```Bash
+/usr/local/bin/vef.sh -c "/path/to/recording.ts"
+```
+
+3. Active Playback Behavior:
+If a file is currently being watched while you trigger a manual repair (`-r` or `-b`), `vef.sh` will process the file in a temporary folder and pause at the swap stage. It will output:
+```Plaintext
+File is currently open for reading (active playback).
+The script will process the file but will wait to swap the video until playback finishes.
+Tip: Press Ctrl+Z, then type 'bg' to run this wait in the background.
+```
+
+This releases the global process lock so cron jobs can continue processing in the background while the manual job waits for the viewer to finish.
+
+
+## Testing the process 
+NOTE: These instructions have been adapted for the most recent version but not tested!
 
 1. Set required variables in the script
     1. Tvheadend home (where the config directory resides)
@@ -115,26 +168,25 @@ You should test this first obviously, and here's how you can do that:
 
 3. Become the user that tvheadend runs as
     1. If this isn't possible due to the user not having a shell set, skip to step 6
-```
+```bash
 sudo su - tvheadend
+# or commonly 'hts'
 ```
 
 4. Run the script manually:
-```
-/usr/local/bin/vef.sh "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts" "Test"
+```bash
+/usr/local/bin/vef.sh -b "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts"
 ```
 
 5. Go look through the log and see what happened! You want to see it there are any warnings or errors or if variables aren't getting set (debug will show you this). By default the log will be in the tvheadend home directory you set.
-```
-less /home/tvheadend/viderrfix.log
+```bash
+less /home/tvheadend/vef.log
 ```
 
 6. If you can't run step 3 as the user in the shell, that's alright, we can tell sudo to run it as that user:
     1. The "tvheadend" at the end of the command is the user to run this command as
-```
-sudo su -s /bin/bash  -c '/usr/local/bin/vef.sh "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts" "Test"' tvheadend
+```bash
+sudo su -s /bin/bash  -c '/usr/local/bin/vef.sh -b "/rec/dailyshows/Jeopardy!-45.1 WBFFDT2017-07-05-.E3775.ts"' tvheadend
 ```
 
-7. When testing is all done change testrun  to "no" and the processed file will overwrite the original recording (and we won't have to do anything to tvheadend because it doesn't know any better in regards to the file on the system)
-
-_Testing is broken currently in v2! Skip this section for now_
+7. When testing is all done change testrun  to "no" and the processed file will overwrite the original recording.
