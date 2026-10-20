@@ -59,7 +59,7 @@ if [ ${logdebug} = 1 ]; then
   declare ffmpegloglevel="warning"
 fi
 
-### Comskip Configuration
+### Comskip & Cleanup Configuration
 ##############################################################################
 declare enable_comskip="yes"
 declare comskip_ini_default="${tvhhome}/comskip-profiles/comskip-default.ini"
@@ -70,10 +70,20 @@ declare -r comskip_ini_dir="${tvhhome}/comskip-profiles"
 # MatchKey options: title | channelname | alltext | default
 # Note: "alltext" will search title, subtitle & description
 declare -a comskip_rules=(
-  "title | nfl football,super bowl,mlb baseball,Stanley Cup Final,NHL Hockey,United Football League | comskip-sports.ini"
+  "title | nfl football,super bowl,United Football League | comskip-usanflhd.ini"
+  "title | mlb baseball,Stanley Cup Final,NHL Hockey | comskip-sports.ini"
   "channelname | PBS,MPT | comskip-pbs.ini"
   "default | * | comskip-default.ini"
 )
+
+# Base directory where TV recordings reside
+declare -r recbase="/rec"
+
+# Default sidecar extensions to clean
+declare -a comskip_cleanup_exts=("edl" "txt" "vdr" "log" "logo.txt")
+
+# Default minimum age (in days) before an orphaned sidecar is removed
+declare -i comskip_cleanup_min_days=1
 
 ### Functions
 ##############################################################################
@@ -111,6 +121,11 @@ Options:
   -c, --comskip    (Manual) Run ONLY Comskip commercial detection in-place.
   -b, -f, --both   (Manual) Run Both video repair and Comskip.
   -h, -u, --help   Display this usage information.
+  --clean [OPTS] [DIR]      Clean orphaned Comskip sidecars.
+                   Options: -n/--dry-run, -q/--quiet, -R/--recursive,
+                            --from-log, --days N, --exts ext1 ext2
+                   # recursive will search all subdirectories of baserec
+                   # from-log will search the processed.log and get directories to scan from it
 
 Tvheadend Integration:
   1) ADD THE PROCESSING TO THE CRONTAB!
@@ -395,13 +410,178 @@ function run_comskip () {
   local selected_ini="$(get_comskip_ini)"
   veflog "Running Comskip on '${bname}' with profile: ${selected_ini}"
 
+  # Build Comskip CLI flags
+  local comskip_opts=()
   if [ -f "${selected_ini}" ]; then
-    comskip --ini="${selected_ini}" --output="${output_dir}" "${target_file}" >> "${logloc}" 2>&1
-  else
-    veflog "Warning: Comskip ini file not found at ${selected_ini}. Running with defaults."
-    comskip --output="${output_dir}" "${target_file}" >> "${logloc}" 2>&1
+    comskip_opts+=(--ini="${selected_ini}")
   fi
-  veflog "Finished Comskip processing"
+  comskip_opts+=(--output="${output_dir}")
+
+  # Configure logging based on logdebug variable
+  if [ "${logdebug}" -eq 1 ]; then
+    # Debug ON: Create $filename.log
+    comskip_opts+=(--output-logfile=1)
+    if comskip "${comskip_opts[@]}" "${target_file}" > /dev/null 2>&1; then
+      veflog "Finished Comskip processing (debug mode)"
+    else
+      veflog "Warning: Comskip exited with a non-zero status"
+    fi
+  else
+    # Debug OFF: Suppress $filename.log and stdout/stderr stream
+    comskip_opts+=(--output-logfile=0)
+    if comskip "${comskip_opts[@]}" "${target_file}" > /dev/null 2>&1; then
+      veflog "Finished Comskip processing"
+    else
+      veflog "Warning: Comskip exited with a non-zero status"
+    fi
+
+    # Clean up $filename.txt sidecar if not in debug mode
+    if [ -f "${output_dir}/${bname}.txt" ]; then
+      rm -f "${output_dir}/${bname}.txt"
+    fi
+  fi
+}
+
+function cleanup_comskip_sidecars () {
+  local target_dir=""
+  local min_days="${comskip_cleanup_min_days}"
+  local recursive=false
+  local use_log=false
+  local dry_run=false
+  local quiet=false
+  local custom_exts=()
+
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "${1}" in
+      -n | --dry-run | --test )
+        dry_run=true
+        shift
+        ;;
+      -q | --quiet )
+        quiet=true
+        shift
+        ;;
+      -r | -R | --recursive )
+        recursive=true
+        shift
+        ;;
+      --from-log )
+        use_log=true
+        shift
+        ;;
+      --days )
+        min_days="${2}"
+        shift 2
+        ;;
+      --exts )
+        shift
+        while [[ $# -gt 0 && ! "${1}" =~ ^-- ]]; do
+          custom_exts+=("${1}")
+          shift
+        done
+        ;;
+      * )
+        if [ -z "${target_dir}" ]; then
+          target_dir="${1}"
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  # Fallback to recbase or tvhhome if target_dir is unset
+  if [ -z "${target_dir}" ]; then
+    if [ -d "${recbase}" ]; then
+      target_dir="${recbase}"
+    else
+      target_dir="${tvhhome}"
+    fi
+  fi
+
+  # Fallback to default extensions if none provided
+  if [ "${#custom_exts[@]}" -eq 0 ]; then
+    custom_exts=("${comskip_cleanup_exts[@]}")
+  fi
+
+  # Build list of directories to scan
+  local scan_dirs=()
+  if [ "${use_log}" = true ]; then
+    if [ -f "${plogloc}" ]; then
+      veflog "Parsing processed.log for active recording directories..."
+      while IFS= read -r dir_path; do
+        if [ -d "${dir_path}" ]; then
+          scan_dirs+=("${dir_path}")
+        fi
+      done < <(awk -F',' '/^Processed/ {print $NF}' "${plogloc}" | sed 's%/[^/]*$%%' | sort -u)
+    fi
+  fi
+
+  # If log parsing yielded no valid dirs or wasn't used, fallback to target_dir
+  if [ "${#scan_dirs[@]}" -eq 0 ]; then
+    scan_dirs+=("${target_dir}")
+  fi
+
+  local mode_str="LIVE"
+  if [ "${dry_run}" = true ]; then mode_str="DRY-RUN"; fi
+
+  veflog "Starting Comskip sidecar cleanup [${mode_str}] (min age: ${min_days} days, recursive: ${recursive})"
+
+  if [ "${quiet}" = false ]; then
+    echo "Starting sidecar cleanup [${mode_str}] (min age: ${min_days} day(s))..."
+  fi
+
+  local removed_count=0
+  local max_depth_flag=""
+  if [ "${recursive}" = false ]; then
+    max_depth_flag="-maxdepth 1"
+  fi
+
+  for sdir in "${scan_dirs[@]}"; do
+    if [ ! -d "${sdir}" ]; then
+      continue
+    fi
+
+    if [ "${quiet}" = false ]; then
+      echo "Scanning directory: ${sdir}"
+    fi
+
+    for ext in "${custom_exts[@]}"; do
+      ext="${ext#.}" # Strip leading dot if present
+
+      while IFS= read -r -d '' sidecar; do
+        local base="${sidecar%.*}"
+
+        # Handle double extension .logo.txt
+        if [[ "${sidecar}" == *.logo.txt ]]; then
+          base="${sidecar%.logo.txt}"
+        fi
+
+        # Verify whether matching video file exists
+        if [ ! -f "${base}.ts" ] && [ ! -f "${base}.mkv" ] && [ ! -f "${base}.mp4" ]; then
+          if [ "${dry_run}" = true ]; then
+            veflog "[DRY-RUN] Would remove orphaned sidecar: ${sidecar}"
+            if [ "${quiet}" = false ]; then
+              echo "  -> [WOULD REMOVE]: ${sidecar##*/}"
+            fi
+          else
+            veflog "Removing orphaned sidecar: ${sidecar}"
+            if [ "${quiet}" = false ]; then
+              echo "  -> Removing: ${sidecar##*/}"
+            fi
+            rm -f "${sidecar}"
+          fi
+          ((removed_count++))
+        fi
+      done < <(find "${sdir}" ${max_depth_flag} -type f -name "*.${ext}" -mtime "+${min_days}" -print0 2>/dev/null)
+    done
+  done
+
+  veflog "Completed Comskip sidecar cleanup [${mode_str}]. Identified/Removed ${removed_count} file(s)."
+
+  if [ "${quiet}" = false ]; then
+    echo "Cleanup complete [${mode_str}]. ${removed_count} file(s) processed."
+  fi
 }
 
 function movefile () {
@@ -697,6 +877,11 @@ case "${1}" in
     checkifprocessing
     check_deps
     process_single_file "-b" "${2}"
+    ;;
+  --clean | --clean-sidecars )
+    checkifprocessing
+    shift
+    cleanup_comskip_sidecars "$@"
     ;;
   -p | --process )
     checkifprocessing
