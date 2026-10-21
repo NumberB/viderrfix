@@ -27,8 +27,8 @@
 
 # Where does your base tvheadend config reside
 declare -r tvhhome="/var/lib/tvheadend/"
-# At how many data errors do we process the video?
-declare -r -i dvrerrorthreshold=20
+# At how many data errors do we process the video? It's safer to leave this at "0" and stream copy everything as tvh doesn't record mpeg2 errors. Plan on always leaving this at 0 if you run comskip, or an error will cause comskip to segfault.
+declare -r -i dvrerrorthreshold=0
 
 # Where would you like this script to log to?
 declare -r logloc="${tvhhome}/vef.log"
@@ -71,7 +71,7 @@ declare -r comskip_ini_dir="${tvhhome}/comskip-profiles"
 # Note: "alltext" will search title, subtitle & description
 declare -a comskip_rules=(
   "title | nfl football,super bowl,United Football League | comskip-usanflhd.ini"
-  "title | mlb baseball,Stanley Cup Final,NHL Hockey | comskip-sports.ini"
+  "title | World Series,mlb baseball,Stanley Cup Final,NHL Hockey | comskip-sports.ini"
   "channelname | PBS,MPT | comskip-pbs.ini"
   "default | * | comskip-default.ini"
 )
@@ -417,28 +417,25 @@ function run_comskip () {
   fi
   comskip_opts+=(--output="${output_dir}")
 
-  # Configure logging based on logdebug variable
-  if [ "${logdebug}" -eq 1 ]; then
-    # Debug ON: Create $filename.log
-    comskip_opts+=(--output-logfile=1)
-    if comskip "${comskip_opts[@]}" "${target_file}" > /dev/null 2>&1; then
-      veflog "Finished Comskip processing (debug mode)"
-    else
-      veflog "Warning: Comskip exited with a non-zero status"
-    fi
-  else
-    # Debug OFF: Suppress $filename.log and stdout/stderr stream
-    comskip_opts+=(--output-logfile=0)
-    if comskip "${comskip_opts[@]}" "${target_file}" > /dev/null 2>&1; then
-      veflog "Finished Comskip processing"
-    else
-      veflog "Warning: Comskip exited with a non-zero status"
-    fi
+  # Capture comskip output to print to vef.log if an error occurs
+  local comskip_out
+  comskip_out=$(comskip "${comskip_opts[@]}" "${target_file}" 2>&1)
+  local comskip_status=$?
 
-    # Clean up $filename.txt sidecar if not in debug mode
-    if [ -f "${output_dir}/${bname}.txt" ]; then
-      rm -f "${output_dir}/${bname}.txt"
-    fi
+  if [ ${comskip_status} -eq 0 ]; then
+    veflog "Finished Comskip processing"
+  else
+    veflog "Warning: Comskip exited with error code ${comskip_status}"
+    veflog "--- Comskip Error Output Begin ---"
+    while IFS= read -r line; do
+      veflog "  [comskip]: ${line}"
+    done <<< "${comskip_out}"
+    veflog "--- Comskip Error Output End ---"
+  fi
+
+  # Clean up unwanted .txt sidecar if not in debug mode
+  if [ "${logdebug}" -eq 0 ] && [ -f "${output_dir}/${bname}.txt" ]; then
+    rm -f "${output_dir}/${bname}.txt"
   fi
 }
 
@@ -776,6 +773,15 @@ function process_single_file () {
     run_comskip "${targetfile}" "${recdir}"
     if [ "${read_open}" -eq 0 ]; then
       echo "${action_log}:${timestamp},MANUAL_OVERRIDE,${targetfile}" >> "${plogloc}"
+    fi
+
+  # Check if Comskip failed to output an EDL sidecar
+    if [ ! -f "${recdir}/${recfile%.*}.edl" ]; then
+      veflog "Warning: Comskip did not generate an EDL file for ${recfile}. Broadcast/container repair (-b) may be required."
+      echo -e "\n[!] Notice: Comskip did not generate an EDL file for ${recfile}."
+      echo "    If Comskip crashed or failed due to broadcast/container errors, run:"
+      echo "    vef.sh -b \"${targetfile}\""
+      echo "    to repair the video stream before running commercial detection."
     fi
 
   elif [[ "${action}" == "-r" ]]; then
